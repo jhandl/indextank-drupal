@@ -8,6 +8,7 @@
 *   The name of the theme function being called (not used in this case.)
 */
 function indextank_preprocess_search_theme_form(&$vars, $hook) {
+  error_log("PREPROCESS: " . print_r($vars,true));
 
   // Remove the "Search this site" label from the form.
   $vars['form']['search_theme_form']['#title'] = t('Search this site');

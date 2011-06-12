@@ -108,15 +108,15 @@ function indextank_admin_submit($form, &$form_state) {
     }
 
     // Index created
-    $query = db_query(
-      "SELECT n.nid, n.type, n.title, n.created as timestamp, nr.body
-      FROM {node} n
-      INNER JOIN {node_revisions} nr ON n.nid = nr.nid
-      WHERE n.status = 1;"
+    $results = db_query(
+      "SELECT n.nid, n.type, n.title, n.created as timestamp, fd.body_value as body
+         FROM node n, field_data_body fd 
+        WHERE n.nid = fd.entity_id
+          AND n.status = 1;", array()
     );
 
     $docs = array();
-    while ($row = db_fetch_object($query)) {
+    foreach ($results as $row) {
       $fields = indextank_get_fields($row);
       $doc = array('docid' => $row->nid, 'fields' => $fields);
       $docs[] = $doc;
@@ -128,7 +128,7 @@ function indextank_admin_submit($form, &$form_state) {
     }
     
     if (count($docs) > 0) {
-        $index->add_documents($docs);
+        $out = $index->add_documents($docs);
     }
   }
 }
@@ -151,7 +151,7 @@ function indextank_menu() {
 
 function indextank_valid_apiurl($api_url) {
   return (bool) preg_match("
-      /^http:\/\/:[[:alnum:][:punct:]]+@[a-z0-9]{4,8}\.api\.indextank\.com$/",
+      /^http:\/\/:[[:alnum:][:punct:]]+@[a-z0-9]{3,8}\.api\.indextank\.com$/",
       $api_url);
 }
 
@@ -170,70 +170,81 @@ function indextank_do_uninstall() {
 }
 
 // Search and index hooks
-function indextank_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
-  if ($op == 'insert' || $op == 'update') {
-    $api_url = variable_get('indextank_apiurl', '');
-    $index_name = 'drupal';
+function indextank_node_insert($node) {
+  $api_url = variable_get('indextank_apiurl', '');
+  $index_name = 'drupal';
 
-    $api = new ApiClient($api_url);
-    $index = $api->get_index($index_name);
+  $api = new ApiClient($api_url);
+  $index = $api->get_index($index_name);
 
-    indextank_index_document($index, $node);
-  }
+  indextank_index_document($index, $node);
 }
 
-function indextank_search($op = 'search', $keys = null) {
-  switch ($op) {
-    case 'name':
-      return t('IndexTank');
-    case 'search':
-      $api_url = variable_get('indextank_apiurl', '');
-      $index_name = 'drupal';
+function indextank_node_update($node) {
+  $api_url = variable_get('indextank_apiurl', '');
+  $index_name = 'drupal';
 
-      $api = new ApiClient($api_url);
-      $index = $api->get_index($index_name);
+  $api = new ApiClient($api_url);
+  $index = $api->get_index($index_name);
 
+  indextank_index_document($index, $node);
+}
 
-      $query_parts = array();
+function indextank_search_info() {
+  return array('title' => 'IndexTank', 'path' => 'indextank');
+}
 
-      // full post, once
-      // snippets won't work without the line below.
-      $query_parts[]= sprintf("(%s)", $keys);
+function indextank_search_access() {
+  return user_access('access content');
+}
 
-      // post_content, once
-      $query_parts[]= sprintf("content:(%s)", $keys);
+function indextank_search_execute($keys = null, $conditions = null) {
 
-      // post title relevance * 5
-      $query_parts[]= sprintf("title:(%s)^5", $keys);
-      
-      // put everything together
-      $query =  implode($query_parts, " OR ");
+error_log("SEARCH: keys=" . print_r($keys,true));
 
-      $indextank_search_result = $index->search($query);
+  $api_url = variable_get('indextank_apiurl', '');
+  $index_name = 'drupal';
 
-      $doc_ids = array();
-      foreach ($indextank_search_result->results as $doc_result) {
-        $doc_ids[] = $doc_result->docid;
-      }
-      $nodes = array();
+  $api = new ApiClient($api_url);
+  $index = $api->get_index($index_name);
 
-      if (count($doc_ids) > 0) {
-        $placeholders = db_placeholders($doc_ids);
+  $query_parts = array();
 
-        $query = db_query("SELECT n.*, u.name FROM {node} n inner join users u on n.uid = u.uid WHERE n.nid IN ($placeholders)", $doc_ids);
-        while ($row = db_fetch_object($query)) {
-          $node = array(
-            'link' => url("node/{$row->nid}"),
-            'type' => $row->type,
-            'title' => $row->title,
-            'user' => $row->name,
-            'date' => $row->changed,
-          );
-          $nodes[] = $node;
-        }
-      }
-      return $nodes;
+  // full post, once
+  // snippets won't work without the line below.
+  $query_parts[]= sprintf("(%s)", $keys);
+
+  // post_content, once
+  $query_parts[]= sprintf("content:(%s)", $keys);
+
+  // post title relevance * 5
+  $query_parts[]= sprintf("title:(%s)^5", $keys);
+  
+  // put everything together
+  $query =  implode($query_parts, " OR ");
+
+  $indextank_search_result = $index->search($query);
+
+  $doc_ids = array();
+  foreach ($indextank_search_result->results as $doc_result) {
+    $doc_ids[] = $doc_result->docid;
   }
+  $nodes = array();
+
+  if (count($doc_ids) > 0) {
+    $results = db_query("SELECT n.*, u.name FROM {node} n inner join users u on n.uid = u.uid WHERE n.nid IN (:docids)", array(':docids' => $doc_ids));
+    foreach ($results as $row) {
+      $node = array(
+        'link' => url("node/{$row->nid}"),
+        'type' => $row->type,
+        'title' => $row->title,
+        'user' => $row->name,
+        'date' => $row->changed,
+      );
+      $nodes[] = $node;
+    }
+  }
+  return $nodes;
 }
 
 function indextank_index_document($index, $document) {
@@ -265,9 +276,8 @@ function indextank_get_fields($document) {
 function indextank_form_alter(&$form, $form_state, $form_id) {
   if ($form_id == 'search_theme_form' || $form_id == 'search_block_form') {
     if (!isset($form['#submit'])) {
-      $form['#submit'] = array('indextank_search_box_form_submit');
-    }
-    else {
+        $form['#submit'] = array('indextank_search_box_form_submit');
+    } else {
       $key = array_search('search_box_form_submit', $form['#submit']);
       if ($key !== FALSE) {
         // Replace the search module's function.
@@ -287,8 +297,9 @@ function indextank_search_box_form_submit($form, &$form_state) {
   // functionality, so we override any static destination set in the request,
   // for example by drupal_access_denied() or drupal_not_found()
   // (see http://drupal.org/node/292565).
-  if (isset($_REQUEST['destination'])) {
-    unset($_REQUEST['destination']);
+
+  if (isset($_GET['destination'])) {
+    unset($_GET['destination']);
   }
   if (isset($_REQUEST['edit']['destination'])) {
     unset($_REQUEST['edit']['destination']);
